@@ -677,15 +677,14 @@ def main():
         print(f"   • Ultra-efficient batch API calls")
         print(f"   • Smart quota tracking and preservation")
         print(f"   • Resume capability if quota runs out")
-        print(f"   • Optional quota limits: max_channels and max_videos")
+        print(f"   • NO LIMITS: Processes all channels and videos found")
         print("-" * 70)
         
-        # Quota control options (uncomment to limit usage)
-        # MAX_CHANNELS = 100  # Process only first 100 channels
-        # MAX_VIDEOS = 50     # Add only first 50 videos to playlist
-        # manager.run_daily_videos_manager(max_channels=MAX_CHANNELS, max_videos=MAX_VIDEOS)
+        # Quota control options (commented out - no limits active)
+        # MAX_CHANNELS = 100  # Uncomment to process only first 100 channels
+        # MAX_VIDEOS = 30     # Uncomment to add only first 30 videos to playlist
         
-        # Run the daily video management (full processing)
+        # Run the daily video management (full processing, no limits)
         manager.run_daily_videos_manager()
         
     except Exception as e:
