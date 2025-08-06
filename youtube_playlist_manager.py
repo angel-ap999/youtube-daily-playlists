@@ -9,15 +9,22 @@ from googleapiclient.discovery import build
 import re
 import pytz
 
-# Scopes needed for YouTube API  
-SCOPES = ['https://www.googleapis.com/auth/youtube.force-ssl']
+# Scopes needed for YouTube API and Google Sheets API
+SCOPES = [
+    'https://www.googleapis.com/auth/youtube.force-ssl',
+    'https://www.googleapis.com/auth/spreadsheets'  # Added for Google Sheets
+]
 
 # Set your timezone here
 TIMEZONE = pytz.timezone('Asia/Hong_Kong')  # Hong Kong timezone (UTC+8)
 
+# Google Sheets configuration
+SPREADSHEET_NAME = "YouTube Daily Videos"  # Name of your Google Sheet
+
 class UltraEfficientYouTubeManager:
     def __init__(self):
         self.youtube = None
+        self.sheets = None  # Added for Google Sheets
         self.quota_used = 0
         self.authenticate()
     
@@ -101,8 +108,95 @@ class UltraEfficientYouTubeManager:
         except Exception as e:
             print(f"❌ Failed to build YouTube API client: {e}")
             raise Exception(f"API client creation failed: {e}")
+        
+        # Build the Google Sheets API client
+        try:
+            self.sheets = build('sheets', 'v4', credentials=creds)
+            print("✅ Successfully authenticated with Google Sheets API")
+            
+        except Exception as e:
+            print(f"⚠️  Warning: Google Sheets API failed: {e}")
+            print("📝 Video logging to spreadsheet will be skipped")
+            self.sheets = None
     
-    def get_yesterday_dates(self):
+    def create_or_find_spreadsheet(self, spreadsheet_name):
+        """Create a new Google Spreadsheet or find existing one"""
+        if not self.sheets:
+            return None
+            
+        try:
+            # Try to create a new spreadsheet
+            spreadsheet = {
+                'properties': {
+                    'title': spreadsheet_name
+                },
+                'sheets': [{
+                    'properties': {
+                        'title': 'Video Links',
+                        'gridProperties': {
+                            'rowCount': 500,
+                            'columnCount': 1
+                        }
+                    }
+                }]
+            }
+            
+            spreadsheet = self.sheets.spreadsheets().create(
+                body=spreadsheet,
+                fields='spreadsheetId'
+            ).execute()
+            
+            spreadsheet_id = spreadsheet.get('spreadsheetId')
+            print(f"📊 Created new Google Sheet: '{spreadsheet_name}'")
+            print(f"🔗 Sheet URL: https://docs.google.com/spreadsheets/d/{spreadsheet_id}")
+            
+            return spreadsheet_id
+            
+        except Exception as e:
+            print(f"❌ Error creating spreadsheet: {e}")
+            return None
+    
+    def add_video_links_to_sheet(self, spreadsheet_id, videos):
+        """Add only video URLs to Google Sheet, overwriting previous data"""
+        if not self.sheets or not videos:
+            return False
+            
+        try:
+            # Prepare just the video links
+            video_links = []
+            for video in videos:
+                video_url = f"https://www.youtube.com/watch?v={video['id']}"
+                video_links.append([video_url])  # Each link in its own row
+            
+            # Clear the entire sheet first
+            clear_request = self.sheets.spreadsheets().values().clear(
+                spreadsheetId=spreadsheet_id,
+                range='Video Links!A:Z'
+            )
+            clear_request.execute()
+            
+            # Write only the video links starting from A1
+            range_name = 'Video Links!A1'
+            
+            body = {
+                'values': video_links
+            }
+            
+            result = self.sheets.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range=range_name,
+                valueInputOption='USER_ENTERED',
+                body=body
+            ).execute()
+            
+            updated_cells = result.get('updatedCells', 0)
+            print(f"📊 Added {len(videos)} video links to Google Sheet (overwrote previous data)")
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error adding video links to sheet: {e}")
+            return False
         """
         Get the date range for yesterday (00:00 to 23:59:59) in Hong Kong timezone
         Returns timezone-aware datetime objects in UTC for API compatibility
@@ -201,7 +295,7 @@ class UltraEfficientYouTubeManager:
             print(f"❌ Error renaming playlist: {e}")
             return False
     
-    def get_subscriptions_batch(self, batch_size=50):
+    def get_yesterday_dates(self):
         """Ultra-efficient: Get all subscriptions in minimum API calls"""
         print("📋 Fetching ALL subscribed channels in batches...")
         
@@ -601,6 +695,31 @@ class UltraEfficientYouTubeManager:
         
         added_count = self.batch_add_videos_to_playlist(new_playlist_id, videos_to_add, channel_map)
         
+        # STEP 8: Add to Google Sheets (NEW!)
+        print(f"\n📊 STEP 8: Adding video links to Google Sheet...")
+        spreadsheet_id = None
+        
+        if self.sheets:
+            try:
+                # Create or find the spreadsheet
+                spreadsheet_id = self.create_or_find_spreadsheet(SPREADSHEET_NAME)
+                
+                if spreadsheet_id:
+                    # Add video links, overwriting previous data
+                    sheet_success = self.add_video_links_to_sheet(spreadsheet_id, long_videos)
+                    
+                    if sheet_success:
+                        print(f"✅ Successfully logged {len(long_videos)} video links to Google Sheet")
+                    else:
+                        print(f"⚠️  Failed to add video links to Google Sheet")
+                else:
+                    print(f"⚠️  Failed to create/find Google Sheet")
+                    
+            except Exception as e:
+                print(f"⚠️  Google Sheets integration failed: {e}")
+        else:
+            print(f"⚠️  Google Sheets API not available, skipping spreadsheet logging")
+        
         # Results
         print("\n" + "=" * 70)
         print(f"🎉 DAILY RESULTS:")
@@ -611,6 +730,12 @@ class UltraEfficientYouTubeManager:
         print(f"   ✅ Videos added to playlist: {added_count}")
         print(f"   🔢 Total quota used: {self.quota_used}/10,000 units")
         print(f"   🔗 New Playlist: https://www.youtube.com/playlist?list={new_playlist_id}")
+        
+        if spreadsheet_id:
+            print(f"   📊 Google Sheet: https://docs.google.com/spreadsheets/d/{spreadsheet_id}")
+            print(f"   🔗 Links updated: Previous day's links were overwritten")
+        else:
+            print(f"   📊 Google Sheet: Not created (see warnings above)")
         
         # Show video length distribution
         if long_videos:
@@ -638,6 +763,7 @@ class UltraEfficientYouTubeManager:
         # Save progress
         progress_data = {
             'playlist_id': new_playlist_id,
+            'spreadsheet_id': spreadsheet_id,
             'target_date': hk_yesterday.strftime('%Y-%m-%d'),  # Hong Kong date
             'target_date_hk': hk_yesterday.strftime('%A, %B %d, %Y'),
             'previous_playlist_renamed': yesterday_playlist_id is not None,
@@ -646,6 +772,7 @@ class UltraEfficientYouTubeManager:
             'long_videos_found': len(long_videos),
             'videos_added': added_count,
             'videos_available': len(long_videos),
+            'sheets_integration': spreadsheet_id is not None,
             'quota_used': self.quota_used,
             'completed': added_count == len(videos_to_add),
             'timestamp': datetime.datetime.now().isoformat()
@@ -661,10 +788,11 @@ class UltraEfficientYouTubeManager:
                 pass
 
 def main():
-    """Main function for daily video playlist management"""
-    print("🎬 YouTube Daily Video Manager")
+    """Main function for daily video playlist management with simple Google Sheets logging"""
+    print("🎬 YouTube Daily Video Manager + Simple Link Logger")
     print("🚀 Creates 'Yesterday' playlist with 10+ minute videos from previous day")
     print("🔄 Automatically renames previous day's playlist to actual date")
+    print("📊 Logs video links to Google Sheet (overwrites previous day)")
     print("-" * 70)
     
     try:
@@ -674,6 +802,8 @@ def main():
         print(f"   • Includes videos longer than 10 minutes only")
         print(f"   • Creates playlist named 'Yesterday' for recent videos")
         print(f"   • Auto-renames previous 'Yesterday' to actual date")
+        print(f"   • Logs video links ONLY to Google Sheets (simple list)")
+        print(f"   • Each day overwrites previous day's links")
         print(f"   • Ultra-efficient batch API calls")
         print(f"   • Smart quota tracking and preservation")
         print(f"   • Resume capability if quota runs out")
