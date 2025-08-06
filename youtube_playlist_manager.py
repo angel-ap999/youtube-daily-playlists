@@ -157,16 +157,21 @@ class UltraEfficientYouTubeManager:
             return None
     
     def add_video_links_to_sheet(self, spreadsheet_id, videos):
-        """Add only video URLs to Google Sheet, overwriting previous data"""
+        """Add video URLs to Google Sheet with header, overwriting previous data"""
         if not self.sheets or not videos:
             return False
             
         try:
-            # Prepare just the video links
+            # Prepare header and video links
+            header_row = [['Video Links']]  # Simple header
             video_links = []
+            
             for video in videos:
                 video_url = f"https://www.youtube.com/watch?v={video['id']}"
                 video_links.append([video_url])  # Each link in its own row
+            
+            # Combine header and links
+            all_data = header_row + video_links
             
             # Clear the entire sheet first
             clear_request = self.sheets.spreadsheets().values().clear(
@@ -175,11 +180,11 @@ class UltraEfficientYouTubeManager:
             )
             clear_request.execute()
             
-            # Write only the video links starting from A1
+            # Write header + video links starting from A1
             range_name = 'Video Links!A1'
             
             body = {
-                'values': video_links
+                'values': all_data
             }
             
             result = self.sheets.spreadsheets().values().update(
@@ -190,13 +195,15 @@ class UltraEfficientYouTubeManager:
             ).execute()
             
             updated_cells = result.get('updatedCells', 0)
-            print(f"📊 Added {len(videos)} video links to Google Sheet (overwrote previous data)")
+            print(f"📊 Added header + {len(videos)} video links to Google Sheet (overwrote previous data)")
             
             return True
             
         except Exception as e:
             print(f"❌ Error adding video links to sheet: {e}")
             return False
+    
+    def get_yesterday_dates(self):
         """
         Get the date range for yesterday (00:00 to 23:59:59) in Hong Kong timezone
         Returns timezone-aware datetime objects in UTC for API compatibility
@@ -295,7 +302,7 @@ class UltraEfficientYouTubeManager:
             print(f"❌ Error renaming playlist: {e}")
             return False
     
-    def get_yesterday_dates(self):
+    def get_subscriptions_batch(self, batch_size=50):
         """Ultra-efficient: Get all subscriptions in minimum API calls"""
         print("📋 Fetching ALL subscribed channels in batches...")
         
@@ -644,6 +651,14 @@ class UltraEfficientYouTubeManager:
         if not new_playlist_id:
             print("❌ Failed to create new playlist")
             return
+        
+        # Check for existing progress
+        progress = self.load_progress()
+        if progress and progress.get('target_date') == hk_yesterday.strftime('%Y-%m-%d'):
+            print("📄 Resuming from saved progress for this date...")
+            playlist_id = progress.get('playlist_id')
+        else:
+            playlist_id = new_playlist_id
         
         # STEP 3: Get all subscriptions (ultra-efficient)
         print(f"\n🔍 STEP 3: Getting subscribed channels...")
