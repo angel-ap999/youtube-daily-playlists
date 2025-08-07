@@ -243,7 +243,98 @@ class UltraEfficientYouTubeManager:
         
         return day_before_start_utc, day_before_end_utc
     
-    def find_playlist_by_name(self, playlist_name):
+    def get_playlist_videos(self, playlist_id):
+        """Get all videos currently in the playlist"""
+        try:
+            all_videos = []
+            next_page_token = None
+            
+            while True:
+                request = self.youtube.playlistItems().list(
+                    part='snippet',
+                    playlistId=playlist_id,
+                    maxResults=50,
+                    pageToken=next_page_token
+                )
+                response = request.execute()
+                self.log_quota("playlistItems.list", 1)
+                
+                for item in response['items']:
+                    all_videos.append({
+                        'playlist_item_id': item['id'],
+                        'video_id': item['snippet']['resourceId']['videoId'],
+                        'title': item['snippet']['title'],
+                        'published': item['snippet']['publishedAt']
+                    })
+                
+                next_page_token = response.get('nextPageToken')
+                if not next_page_token:
+                    break
+            
+            return all_videos
+            
+        except Exception as e:
+            print(f"❌ Error getting playlist videos: {e}")
+            return []
+    
+    def remove_old_videos_from_playlist(self, playlist_id, yesterday_start):
+        """Remove videos older than yesterday from the playlist"""
+        print(f"🗑️  Checking for old videos to remove from playlist...")
+        
+        # Get current videos in playlist
+        current_videos = self.get_playlist_videos(playlist_id)
+        
+        if not current_videos:
+            print(f"ℹ️  Playlist is empty, nothing to remove")
+            return 0
+        
+        print(f"📋 Found {len(current_videos)} videos currently in playlist")
+        
+        # Check which videos are older than yesterday
+        videos_to_remove = []
+        
+        for video in current_videos:
+            try:
+                published_date = datetime.datetime.fromisoformat(video['published'].replace('Z', '+00:00'))
+                
+                # If video was published before yesterday, mark for removal
+                if published_date < yesterday_start:
+                    videos_to_remove.append(video)
+                    
+            except Exception as e:
+                print(f"⚠️  Date parsing error for {video['title']}: {e}")
+                continue
+        
+        # Remove old videos
+        removed_count = 0
+        if videos_to_remove:
+            print(f"🗑️  Removing {len(videos_to_remove)} old videos from playlist...")
+            
+            for video in videos_to_remove:
+                # Check quota before each removal
+                if self.quota_used + 50 > 10000:
+                    print(f"⚠️  Quota limit approaching, stopped removing old videos")
+                    break
+                
+                try:
+                    request = self.youtube.playlistItems().delete(
+                        id=video['playlist_item_id']
+                    )
+                    request.execute()
+                    self.log_quota("playlistItems.delete", 50)  # Costs 50 units
+                    
+                    removed_count += 1
+                    print(f"   🗑️  [{removed_count}] Removed: {video['title']}")
+                    
+                    # Small delay between removals
+                    time.sleep(0.1)
+                    
+                except Exception as e:
+                    print(f"   ❌ Failed to remove: {video['title']} - {str(e)}")
+        else:
+            print(f"ℹ️  No old videos to remove - all current videos are from yesterday or newer")
+        
+        return removed_count
         """Find a playlist by exact name match"""
         try:
             request = self.youtube.playlists().list(
@@ -605,7 +696,7 @@ class UltraEfficientYouTubeManager:
     
     def run_daily_videos_manager(self, max_channels=None, max_videos=None):
         """
-        Create 'Yesterday' playlist and rename previous day's playlist
+        Maintain single 'Yesterday' playlist by removing old videos and adding new ones
         Ultra-efficient API usage with daily filtering for videos 10+ minutes
         
         Args:
@@ -614,51 +705,44 @@ class UltraEfficientYouTubeManager:
         """
         # Get date ranges
         yesterday_start, yesterday_end = self.get_yesterday_dates()
-        day_before_start, day_before_end = self.get_day_before_yesterday_dates()
         
         # Convert to Hong Kong timezone for display and naming
         hk_yesterday = yesterday_start.astimezone(TIMEZONE)
-        hk_day_before = day_before_start.astimezone(TIMEZONE)
         
-        print("🚀 DAILY YouTube Video Manager")
+        print("🚀 DAILY YouTube Video Manager - Single Playlist Mode")
         print("=" * 70)
         print(f"📅 TARGET DATE: {hk_yesterday.strftime('%A, %B %d, %Y')} (Hong Kong time)")
         print(f"🎬 Videos longer than 10 minutes only")
         print(f"🔢 Daily quota: 10,000 units")
-        print(f"🎯 Goal: 'Yesterday' playlist + auto-rename previous day")
+        print(f"🎯 Goal: Maintain single 'Yesterday' playlist with only yesterday's videos")
         print("-" * 70)
         
-        # STEP 1: Handle previous day's playlist renaming
-        print(f"\n🔄 STEP 1: Looking for previous 'Yesterday' playlist to rename...")
+        # STEP 1: Find or create the "Yesterday" playlist
+        print(f"\n🔍 STEP 1: Finding or creating 'Yesterday' playlist...")
         yesterday_playlist_id = self.find_playlist_by_name("Yesterday")
         
         if yesterday_playlist_id:
-            # Rename it to the actual date in Hong Kong timezone
-            day_before_date_str = hk_day_before.strftime('%B %d, %Y')
-            success = self.update_playlist_name(yesterday_playlist_id, day_before_date_str)
-            if success:
-                print(f"✅ Renamed previous 'Yesterday' playlist to '{day_before_date_str}'")
-            else:
-                print(f"⚠️  Failed to rename previous playlist")
+            print(f"✅ Found existing 'Yesterday' playlist")
         else:
-            print("ℹ️  No existing 'Yesterday' playlist found (first run or already renamed)")
+            print(f"📝 Creating new 'Yesterday' playlist...")
+            description = f"Daily playlist containing videos longer than 10 minutes from yesterday. Auto-updated daily."
+            yesterday_playlist_id = self.create_playlist("Yesterday", description)
+            
+            if not yesterday_playlist_id:
+                print("❌ Failed to create playlist")
+                return
         
-        # STEP 2: Create new 'Yesterday' playlist
-        print(f"\n📝 STEP 2: Creating new 'Yesterday' playlist...")
-        description = f"Videos longer than 10 minutes uploaded on {hk_yesterday.strftime('%A, %B %d, %Y')} (Hong Kong time) from subscribed channels. Auto-generated daily playlist."
-        new_playlist_id = self.create_playlist("Yesterday", description)
+        # STEP 2: Remove old videos (older than yesterday) from playlist
+        print(f"\n🗑️  STEP 2: Removing old videos from playlist...")
+        removed_count = self.remove_old_videos_from_playlist(yesterday_playlist_id, yesterday_start)
         
-        if not new_playlist_id:
-            print("❌ Failed to create new playlist")
-            return
+        if removed_count > 0:
+            print(f"✅ Removed {removed_count} old videos from playlist")
         
         # Check for existing progress
         progress = self.load_progress()
         if progress and progress.get('target_date') == hk_yesterday.strftime('%Y-%m-%d'):
             print("📄 Resuming from saved progress for this date...")
-            playlist_id = progress.get('playlist_id')
-        else:
-            playlist_id = new_playlist_id
         
         # STEP 3: Get all subscriptions (ultra-efficient)
         print(f"\n🔍 STEP 3: Getting subscribed channels...")
@@ -688,6 +772,14 @@ class UltraEfficientYouTubeManager:
             print("   • No channels uploaded yesterday")
             print("   • Videos were uploaded as premieres/scheduled")
             print("   • Try running again later if premieres are starting today")
+            
+            # Still update Google Sheet even if no new videos
+            if self.sheets:
+                print(f"\n📊 STEP 6: Updating Google Sheet with empty list...")
+                spreadsheet_id = self.create_or_find_spreadsheet(SPREADSHEET_NAME)
+                if spreadsheet_id:
+                    self.add_video_links_to_sheet(spreadsheet_id, [])
+                    print(f"✅ Updated Google Sheet (cleared previous links)")
             return
         
         # STEP 6: Batch get video details (10+ minutes only)
@@ -697,10 +789,18 @@ class UltraEfficientYouTubeManager:
         if not long_videos:
             print("ℹ️  No videos longer than 10 minutes found from yesterday")
             print("💡 All videos from yesterday were shorter than 10 minutes")
+            
+            # Still update Google Sheet even if no long videos
+            if self.sheets:
+                print(f"\n📊 STEP 7: Updating Google Sheet with empty list...")
+                spreadsheet_id = self.create_or_find_spreadsheet(SPREADSHEET_NAME)
+                if spreadsheet_id:
+                    self.add_video_links_to_sheet(spreadsheet_id, [])
+                    print(f"✅ Updated Google Sheet (cleared previous links)")
             return
         
-        # STEP 7: Add to playlist
-        print(f"\n➕ STEP 7: Adding videos to 'Yesterday' playlist...")
+        # STEP 7: Add new videos to playlist
+        print(f"\n➕ STEP 7: Adding yesterday's videos to 'Yesterday' playlist...")
         
         # Apply video limit for quota control
         videos_to_add = long_videos
@@ -708,10 +808,10 @@ class UltraEfficientYouTubeManager:
             videos_to_add = long_videos[:max_videos]
             print(f"🔧 Limited to first {max_videos} videos for quota efficiency")
         
-        added_count = self.batch_add_videos_to_playlist(new_playlist_id, videos_to_add, channel_map)
+        added_count = self.batch_add_videos_to_playlist(yesterday_playlist_id, videos_to_add, channel_map)
         
-        # STEP 8: Add to Google Sheets (NEW!)
-        print(f"\n📊 STEP 8: Adding video links to Google Sheet...")
+        # STEP 8: Update Google Sheets
+        print(f"\n📊 STEP 8: Updating Google Sheet with yesterday's video links...")
         spreadsheet_id = None
         
         if self.sheets:
@@ -724,16 +824,16 @@ class UltraEfficientYouTubeManager:
                     sheet_success = self.add_video_links_to_sheet(spreadsheet_id, long_videos)
                     
                     if sheet_success:
-                        print(f"✅ Successfully logged {len(long_videos)} video links to Google Sheet")
+                        print(f"✅ Successfully updated Google Sheet with {len(long_videos)} video links")
                     else:
-                        print(f"⚠️  Failed to add video links to Google Sheet")
+                        print(f"⚠️  Failed to update Google Sheet")
                 else:
                     print(f"⚠️  Failed to create/find Google Sheet")
                     
             except Exception as e:
                 print(f"⚠️  Google Sheets integration failed: {e}")
         else:
-            print(f"⚠️  Google Sheets API not available, skipping spreadsheet logging")
+            print(f"⚠️  Google Sheets API not available, skipping spreadsheet update")
         
         # Results
         print("\n" + "=" * 70)
@@ -742,13 +842,14 @@ class UltraEfficientYouTubeManager:
         print(f"   📺 Channels scanned: {len(channels)}")
         print(f"   🎬 Videos from yesterday: {len(video_ids)}")
         print(f"   ⏱️  Long videos (10+ min): {len(long_videos)}")
-        print(f"   ✅ Videos added to playlist: {added_count}")
+        print(f"   🗑️  Old videos removed: {removed_count}")
+        print(f"   ✅ New videos added: {added_count}")
         print(f"   🔢 Total quota used: {self.quota_used}/10,000 units")
-        print(f"   🔗 New Playlist: https://www.youtube.com/playlist?list={new_playlist_id}")
+        print(f"   🔗 Yesterday Playlist: https://www.youtube.com/playlist?list={yesterday_playlist_id}")
         
         if spreadsheet_id:
             print(f"   📊 Google Sheet: https://docs.google.com/spreadsheets/d/{spreadsheet_id}")
-            print(f"   🔗 Links updated: Previous day's links were overwritten")
+            print(f"   🔗 Links updated: Sheet now contains yesterday's links only")
         else:
             print(f"   📊 Google Sheet: Not created (see warnings above)")
         
@@ -777,15 +878,15 @@ class UltraEfficientYouTubeManager:
         
         # Save progress
         progress_data = {
-            'playlist_id': new_playlist_id,
+            'playlist_id': yesterday_playlist_id,
             'spreadsheet_id': spreadsheet_id,
             'target_date': hk_yesterday.strftime('%Y-%m-%d'),  # Hong Kong date
             'target_date_hk': hk_yesterday.strftime('%A, %B %d, %Y'),
-            'previous_playlist_renamed': yesterday_playlist_id is not None,
             'channels_processed': len(channels),
             'videos_found': len(video_ids),
             'long_videos_found': len(long_videos),
-            'videos_added': added_count,
+            'old_videos_removed': removed_count,
+            'new_videos_added': added_count,
             'videos_available': len(long_videos),
             'sheets_integration': spreadsheet_id is not None,
             'quota_used': self.quota_used,
@@ -803,10 +904,10 @@ class UltraEfficientYouTubeManager:
                 pass
 
 def main():
-    """Main function for daily video playlist management with simple Google Sheets logging"""
-    print("🎬 YouTube Daily Video Manager + Simple Link Logger")
-    print("🚀 Creates 'Yesterday' playlist with 10+ minute videos from previous day")
-    print("🔄 Automatically renames previous day's playlist to actual date")
+    """Main function for single playlist daily video management with Google Sheets logging"""
+    print("🎬 YouTube Single Playlist Manager + Link Logger")
+    print("🚀 Maintains one 'Yesterday' playlist with only yesterday's videos")
+    print("🗑️  Automatically removes old videos and adds new ones daily")
     print("📊 Logs video links to Google Sheet (overwrites previous day)")
     print("-" * 70)
     
@@ -815,8 +916,9 @@ def main():
         
         print(f"💡 Key Features:")
         print(f"   • Includes videos longer than 10 minutes only")
-        print(f"   • Creates playlist named 'Yesterday' for recent videos")
-        print(f"   • Auto-renames previous 'Yesterday' to actual date")
+        print(f"   • Maintains single 'Yesterday' playlist (no multiple playlists)")
+        print(f"   • Removes videos older than yesterday automatically")
+        print(f"   • Adds only yesterday's new videos")
         print(f"   • Logs video links ONLY to Google Sheets (simple list)")
         print(f"   • Each day overwrites previous day's links")
         print(f"   • Ultra-efficient batch API calls")
