@@ -36,97 +36,104 @@ class UltraEfficientYouTubeManager:
         print(f"🔢 Quota: {self.quota_used}/10,000 (+{cost} for {operation})")
     
     def authenticate(self):
-        """Authenticate with YouTube API - GitHub Actions compatible"""
+        """Authenticate with YouTube API using OAuth2 with improved error handling"""
         creds = None
         
-        # Check if running in GitHub Actions
+        # Check environment
         if os.environ.get('GITHUB_ACTIONS'):
-            print("🤖 GitHub Actions detected - using service account authentication")
-            
-            # Try to get service account credentials from environment
-            service_account_json = os.environ.get('GOOGLE_SERVICE_ACCOUNT_JSON')
-            if not service_account_json:
-                print("❌ ERROR: GOOGLE_SERVICE_ACCOUNT_JSON environment variable not found!")
-                print("📋 Setup Instructions for GitHub Actions:")
-                print("1. Create a service account at https://console.cloud.google.com/")
-                print("2. Download the JSON key file")
-                print("3. Add the JSON content as a GitHub secret named 'GOOGLE_SERVICE_ACCOUNT_JSON'")
-                raise Exception("Missing service account credentials for GitHub Actions")
-            
-            try:
-                # Parse the JSON and create credentials
-                import json
-                from google.oauth2 import service_account
-                
-                service_account_info = json.loads(service_account_json)
-                creds = service_account.Credentials.from_service_account_info(
-                    service_account_info, scopes=SCOPES)
-                print("✅ Service account authentication successful")
-                
-            except Exception as e:
-                print(f"❌ Service account authentication failed: {e}")
-                raise Exception(f"Service account setup failed: {e}")
-        
+            print("🤖 GitHub Actions detected")
         else:
-            # Local development - use OAuth flow
-            print("💻 Local environment detected - using OAuth authentication")
-            
-            # Check if credentials.json exists
-            if not os.path.exists('credentials.json'):
-                print("❌ ERROR: credentials.json not found!")
-                print("📋 Setup Instructions:")
+            print("💻 Local environment detected")
+        
+        # Check if credentials.json exists
+        if not os.path.exists('credentials.json'):
+            print("❌ ERROR: credentials.json not found!")
+            if os.environ.get('GITHUB_ACTIONS'):
+                print("📋 GitHub Actions Setup:")
+                print("1. Add your credentials.json content as GitHub secret 'GOOGLE_CREDENTIALS_JSON'")
+                print("2. Update workflow to create credentials.json:")
+                print("   - name: Create credentials file")
+                print("     run: echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > credentials.json")
+            else:
+                print("📋 Local Setup Instructions:")
                 print("1. Go to https://console.cloud.google.com/")
                 print("2. Create a new project or select existing one")
                 print("3. Enable YouTube Data API v3, Google Sheets API, and Google Drive API")
                 print("4. Create OAuth 2.0 credentials")
                 print("5. Download and save as 'credentials.json'")
-                raise Exception("Missing credentials.json file")
+            raise Exception("Missing credentials.json file")
+        
+        # Check if it's a service account or OAuth credentials
+        try:
+            with open('credentials.json', 'r') as f:
+                cred_data = json.load(f)
             
-            # Load existing token if available
-            if os.path.exists('token.json'):
-                try:
-                    creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-                    print("🔑 Loaded existing token")
-                except Exception as e:
-                    print(f"⚠️  Token file corrupted: {e}")
-                    print("🔄 Removing corrupted token, will re-authenticate...")
-                    os.remove('token.json')
-                    creds = None
-            
-            # Handle token refresh or new authentication
-            if not creds or not creds.valid:
-                if creds and creds.expired and creds.refresh_token:
+            if 'type' in cred_data and cred_data['type'] == 'service_account':
+                print("🔑 Using service account authentication")
+                from google.oauth2 import service_account
+                creds = service_account.Credentials.from_service_account_file(
+                    'credentials.json', scopes=SCOPES)
+                print("✅ Service account authentication successful")
+            else:
+                print("🔑 Using OAuth authentication")
+                # Load existing token if available
+                if os.path.exists('token.json'):
                     try:
-                        print("🔄 Refreshing expired token...")
-                        creds.refresh(Request())
-                        print("✅ Token refreshed successfully")
+                        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+                        print("🔑 Loaded existing token")
                     except Exception as e:
-                        print(f"❌ Token refresh failed: {e}")
-                        print("🔄 Starting fresh authentication...")
-                        # Remove the bad token and start fresh
-                        if os.path.exists('token.json'):
-                            os.remove('token.json')
+                        print(f"⚠️  Token file corrupted: {e}")
+                        print("🔄 Removing corrupted token, will re-authenticate...")
+                        os.remove('token.json')
                         creds = None
                 
-                # If refresh failed or no valid creds, start OAuth flow
-                if not creds:
-                    try:
-                        print("🚀 Starting OAuth authentication flow...")
-                        flow = InstalledAppFlow.from_client_secrets_file(
-                            'credentials.json', SCOPES)
-                        creds = flow.run_local_server(port=0)
-                        print("✅ OAuth authentication completed")
-                    except Exception as e:
-                        print(f"❌ OAuth flow failed: {e}")
-                        raise Exception(f"Authentication failed: {e}")
-                
-                # Save the new/refreshed credentials
-                try:
-                    with open('token.json', 'w') as token:
-                        token.write(creds.to_json())
-                    print("💾 Saved new authentication token")
-                except Exception as e:
-                    print(f"⚠️  Warning: Could not save token: {e}")
+                # Handle token refresh or new authentication
+                if not creds or not creds.valid:
+                    if creds and creds.expired and creds.refresh_token:
+                        try:
+                            print("🔄 Refreshing expired token...")
+                            creds.refresh(Request())
+                            print("✅ Token refreshed successfully")
+                        except Exception as e:
+                            print(f"❌ Token refresh failed: {e}")
+                            print("🔄 Starting fresh authentication...")
+                            # Remove the bad token and start fresh
+                            if os.path.exists('token.json'):
+                                os.remove('token.json')
+                            creds = None
+                    
+                    # If refresh failed or no valid creds, start OAuth flow
+                    if not creds:
+                        if os.environ.get('GITHUB_ACTIONS'):
+                            print("❌ OAuth flow not possible in GitHub Actions")
+                            print("💡 Use a service account for GitHub Actions:")
+                            print("1. Create service account at https://console.cloud.google.com/")
+                            print("2. Download service account JSON")
+                            print("3. Replace GitHub secret content with service account JSON")
+                            raise Exception("OAuth requires browser - use service account for GitHub Actions")
+                        
+                        try:
+                            print("🚀 Starting OAuth authentication flow...")
+                            flow = InstalledAppFlow.from_client_secrets_file(
+                                'credentials.json', SCOPES)
+                            creds = flow.run_local_server(port=0)
+                            print("✅ OAuth authentication completed")
+                        except Exception as e:
+                            print(f"❌ OAuth flow failed: {e}")
+                            raise Exception(f"Authentication failed: {e}")
+                    
+                    # Save the new/refreshed credentials
+                    if not os.environ.get('GITHUB_ACTIONS'):  # Don't save in GitHub Actions
+                        try:
+                            with open('token.json', 'w') as token:
+                                token.write(creds.to_json())
+                            print("💾 Saved new authentication token")
+                        except Exception as e:
+                            print(f"⚠️  Warning: Could not save token: {e}")
+        
+        except Exception as e:
+            print(f"❌ Authentication failed: {e}")
+            raise
         
         # Build the API clients
         try:
