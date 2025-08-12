@@ -1,18 +1,16 @@
-name: Daily YouTube Playlist Creator
+name: Daily YouTube Update
 
 on:
   schedule:
-    # Run every day at 8:00 AM Hong Kong time (which is 0:00 UTC)
-    - cron: '0 0 * * *'
-  workflow_dispatch:  # Allow manual triggering
+    - cron: '0 1 * * *'  # Daily at 1 AM UTC
+  workflow_dispatch:
 
 jobs:
-  create-playlist:
+  run-script:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
+    - uses: actions/checkout@v3
     
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -21,18 +19,13 @@ jobs:
     
     - name: Install dependencies
       run: |
-        pip install google-api-python-client google-auth-oauthlib pytz
+        pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client pytz
     
     - name: Create credentials file
       run: |
-        echo '${{ secrets.GOOGLE_CREDENTIALS }}' > credentials.json
+        echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > credentials.json
     
-    - name: Restore token file (if exists)
-      run: |
-        if [ ! -z "${{ secrets.GOOGLE_TOKEN }}" ]; then
-          echo '${{ secrets.GOOGLE_TOKEN }}' > token.json
-        fi
-    
-    - name: Run YouTube playlist creator
-      run: |
-        python youtube_playlist_manager.py
+    - name: Run YouTube script
+      run: python youtube_playlist_manager.py
+      env:
+        GITHUB_ACTIONS: true
