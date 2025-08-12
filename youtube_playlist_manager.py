@@ -12,19 +12,21 @@ import pytz
 # Scopes needed for YouTube API and Google Sheets API
 SCOPES = [
     'https://www.googleapis.com/auth/youtube.force-ssl',
-    'https://www.googleapis.com/auth/spreadsheets'  # Added for Google Sheets
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/drive'  # Added for folder access
 ]
 
 # Set your timezone here
 TIMEZONE = pytz.timezone('Asia/Hong_Kong')  # Hong Kong timezone (UTC+8)
 
-# Google Sheets configuration
-SPREADSHEET_NAME = "YouTube Daily Videos"  # Name of your Google Sheet
+# Google Drive folder configuration
+FOLDER_NAME = "Podkits"  # Name of your Google Drive folder
 
 class UltraEfficientYouTubeManager:
     def __init__(self):
         self.youtube = None
-        self.sheets = None  # Added for Google Sheets
+        self.sheets = None
+        self.drive = None  # Added for Google Drive
         self.quota_used = 0
         self.authenticate()
     
@@ -34,67 +36,99 @@ class UltraEfficientYouTubeManager:
         print(f"🔢 Quota: {self.quota_used}/10,000 (+{cost} for {operation})")
     
     def authenticate(self):
-        """Authenticate with YouTube API using OAuth2 with improved error handling"""
+        """Authenticate with YouTube API - GitHub Actions compatible"""
         creds = None
         
-        # Check if credentials.json exists
-        if not os.path.exists('credentials.json'):
-            print("❌ ERROR: credentials.json not found!")
-            print("📋 Setup Instructions:")
-            print("1. Go to https://console.cloud.google.com/")
-            print("2. Create a new project or select existing one")
-            print("3. Enable YouTube Data API v3")
-            print("4. Create OAuth 2.0 credentials")
-            print("5. Download and save as 'credentials.json'")
-            raise Exception("Missing credentials.json file")
-        
-        # Load existing token if available
-        if os.path.exists('token.json'):
+        # Check if running in GitHub Actions
+        if os.environ.get('GITHUB_ACTIONS'):
+            print("🤖 GitHub Actions detected - using service account authentication")
+            
+            # Try to get service account credentials from environment
+            service_account_json = os.environ.get('GOOGLE_SERVICE_ACCOUNT_JSON')
+            if not service_account_json:
+                print("❌ ERROR: GOOGLE_SERVICE_ACCOUNT_JSON environment variable not found!")
+                print("📋 Setup Instructions for GitHub Actions:")
+                print("1. Create a service account at https://console.cloud.google.com/")
+                print("2. Download the JSON key file")
+                print("3. Add the JSON content as a GitHub secret named 'GOOGLE_SERVICE_ACCOUNT_JSON'")
+                raise Exception("Missing service account credentials for GitHub Actions")
+            
             try:
-                creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-                print("🔑 Loaded existing token")
+                # Parse the JSON and create credentials
+                import json
+                from google.oauth2 import service_account
+                
+                service_account_info = json.loads(service_account_json)
+                creds = service_account.Credentials.from_service_account_info(
+                    service_account_info, scopes=SCOPES)
+                print("✅ Service account authentication successful")
+                
             except Exception as e:
-                print(f"⚠️  Token file corrupted: {e}")
-                print("🔄 Removing corrupted token, will re-authenticate...")
-                os.remove('token.json')
-                creds = None
+                print(f"❌ Service account authentication failed: {e}")
+                raise Exception(f"Service account setup failed: {e}")
         
-        # Handle token refresh or new authentication
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
+        else:
+            # Local development - use OAuth flow
+            print("💻 Local environment detected - using OAuth authentication")
+            
+            # Check if credentials.json exists
+            if not os.path.exists('credentials.json'):
+                print("❌ ERROR: credentials.json not found!")
+                print("📋 Setup Instructions:")
+                print("1. Go to https://console.cloud.google.com/")
+                print("2. Create a new project or select existing one")
+                print("3. Enable YouTube Data API v3, Google Sheets API, and Google Drive API")
+                print("4. Create OAuth 2.0 credentials")
+                print("5. Download and save as 'credentials.json'")
+                raise Exception("Missing credentials.json file")
+            
+            # Load existing token if available
+            if os.path.exists('token.json'):
                 try:
-                    print("🔄 Refreshing expired token...")
-                    creds.refresh(Request())
-                    print("✅ Token refreshed successfully")
+                    creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+                    print("🔑 Loaded existing token")
                 except Exception as e:
-                    print(f"❌ Token refresh failed: {e}")
-                    print("🔄 Starting fresh authentication...")
-                    # Remove the bad token and start fresh
-                    if os.path.exists('token.json'):
-                        os.remove('token.json')
+                    print(f"⚠️  Token file corrupted: {e}")
+                    print("🔄 Removing corrupted token, will re-authenticate...")
+                    os.remove('token.json')
                     creds = None
             
-            # If refresh failed or no valid creds, start OAuth flow
-            if not creds:
+            # Handle token refresh or new authentication
+            if not creds or not creds.valid:
+                if creds and creds.expired and creds.refresh_token:
+                    try:
+                        print("🔄 Refreshing expired token...")
+                        creds.refresh(Request())
+                        print("✅ Token refreshed successfully")
+                    except Exception as e:
+                        print(f"❌ Token refresh failed: {e}")
+                        print("🔄 Starting fresh authentication...")
+                        # Remove the bad token and start fresh
+                        if os.path.exists('token.json'):
+                            os.remove('token.json')
+                        creds = None
+                
+                # If refresh failed or no valid creds, start OAuth flow
+                if not creds:
+                    try:
+                        print("🚀 Starting OAuth authentication flow...")
+                        flow = InstalledAppFlow.from_client_secrets_file(
+                            'credentials.json', SCOPES)
+                        creds = flow.run_local_server(port=0)
+                        print("✅ OAuth authentication completed")
+                    except Exception as e:
+                        print(f"❌ OAuth flow failed: {e}")
+                        raise Exception(f"Authentication failed: {e}")
+                
+                # Save the new/refreshed credentials
                 try:
-                    print("🚀 Starting OAuth authentication flow...")
-                    flow = InstalledAppFlow.from_client_secrets_file(
-                        'credentials.json', SCOPES)
-                    creds = flow.run_local_server(port=0)
-                    print("✅ OAuth authentication completed")
+                    with open('token.json', 'w') as token:
+                        token.write(creds.to_json())
+                    print("💾 Saved new authentication token")
                 except Exception as e:
-                    print(f"❌ OAuth flow failed: {e}")
-                    raise Exception(f"Authentication failed: {e}")
-            
-            # Save the new/refreshed credentials
-            try:
-                with open('token.json', 'w') as token:
-                    token.write(creds.to_json())
-                print("💾 Saved new authentication token")
-            except Exception as e:
-                print(f"⚠️  Warning: Could not save token: {e}")
+                    print(f"⚠️  Warning: Could not save token: {e}")
         
-        # Build the YouTube API client
+        # Build the API clients
         try:
             self.youtube = build('youtube', 'v3', credentials=creds)
             print("✅ Successfully authenticated with YouTube API")
@@ -109,7 +143,6 @@ class UltraEfficientYouTubeManager:
             print(f"❌ Failed to build YouTube API client: {e}")
             raise Exception(f"API client creation failed: {e}")
         
-        # Build the Google Sheets API client
         try:
             self.sheets = build('sheets', 'v4', credentials=creds)
             print("✅ Successfully authenticated with Google Sheets API")
@@ -118,85 +151,53 @@ class UltraEfficientYouTubeManager:
             print(f"⚠️  Warning: Google Sheets API failed: {e}")
             print("📝 Video logging to spreadsheet will be skipped")
             self.sheets = None
-    
-    def load_persistent_config(self, filename='youtube_sheet_config.json'):
-        """Load persistent configuration that survives across daily runs"""
+        
         try:
-            with open(filename, 'r') as f:
-                return json.load(f)
-        except FileNotFoundError:
-            return None
+            self.drive = build('drive', 'v3', credentials=creds)
+            print("✅ Successfully authenticated with Google Drive API")
+            
         except Exception as e:
-            print(f"⚠️  Error loading persistent config: {e}")
-            return None
-
-    def save_persistent_config(self, data, filename='youtube_sheet_config.json'):
-        """Save persistent configuration that survives across daily runs"""
-        try:
-            with open(filename, 'w') as f:
-                json.dump(data, f, indent=2)
-            print(f"💾 Saved persistent config to {filename}")
-        except Exception as e:
-            print(f"⚠️  Error saving persistent config: {e}")
+            print(f"⚠️  Warning: Google Drive API failed: {e}")
+            print("📝 Folder organization will be skipped")
+            self.drive = None
     
-    def get_or_create_spreadsheet(self, spreadsheet_name):
-        """Get existing spreadsheet ID or create new one - GitHub Actions compatible"""
+    def find_folder_id(self, folder_name):
+        """Find the folder ID by name"""
+        if not self.drive:
+            return None
+            
+        try:
+            query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder'"
+            results = self.drive.files().list(q=query, fields="files(id, name)").execute()
+            folders = results.get('files', [])
+            
+            if folders:
+                folder_id = folders[0]['id']
+                print(f"📁 Found '{folder_name}' folder: {folder_id}")
+                return folder_id
+            else:
+                print(f"⚠️  Folder '{folder_name}' not found - sheet will be created in root")
+                return None
+                
+        except Exception as e:
+            print(f"❌ Error finding folder: {e}")
+            return None
+    
+    def create_daily_spreadsheet(self):
+        """Create a new Google Sheet with today's date in the Podkits folder"""
         if not self.sheets:
             return None
         
-        # First check for environment variable (GitHub Actions)
-        spreadsheet_id = os.environ.get('GOOGLE_SPREADSHEET_ID')
-        if spreadsheet_id:
-            try:
-                sheet_info = self.sheets.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-                sheet_title = sheet_info.get('properties', {}).get('title', 'Unknown')
-                print(f"📊 Using spreadsheet from environment variable: '{sheet_title}'")
-                print(f"🔗 Sheet URL: https://docs.google.com/spreadsheets/d/{spreadsheet_id}")
-                return spreadsheet_id
-            except Exception as e:
-                print(f"⚠️  Environment spreadsheet no longer accessible: {e}")
-                print("📝 Will create a new spreadsheet...")
+        # Get today's date in Hong Kong timezone
+        hk_now = datetime.datetime.now(TIMEZONE)
+        date_str = hk_now.strftime('%Y-%m-%d')
+        spreadsheet_name = f"New video links - {date_str}"
         
-        # Fallback: Check persistent config (for local runs)
-        config = self.load_persistent_config()
-        if config and config.get('spreadsheet_id'):
-            spreadsheet_id = config['spreadsheet_id']
-            
-            # Verify the sheet still exists and is accessible
-            try:
-                sheet_info = self.sheets.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-                sheet_title = sheet_info.get('properties', {}).get('title', 'Unknown')
-                print(f"📊 Reusing existing Google Sheet: '{sheet_title}'")
-                print(f"🔗 Sheet URL: https://docs.google.com/spreadsheets/d/{spreadsheet_id}")
-                return spreadsheet_id
-            except Exception as e:
-                print(f"⚠️  Stored spreadsheet no longer accessible: {e}")
-                print("📝 Will create a new spreadsheet...")
+        # Find the Podkits folder
+        folder_id = self.find_folder_id(FOLDER_NAME)
         
-        # Try to load from progress file (for same-day resumes)
-        progress = self.load_progress()
-        if progress and progress.get('spreadsheet_id'):
-            spreadsheet_id = progress['spreadsheet_id']
-            try:
-                sheet_info = self.sheets.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-                print(f"📊 Using Google Sheet ID from progress file: {spreadsheet_id}")
-                
-                # Save to persistent config for future runs (local only)
-                if not os.environ.get('GITHUB_ACTIONS'):
-                    config_data = {
-                        'spreadsheet_id': spreadsheet_id,
-                        'spreadsheet_name': spreadsheet_name,
-                        'created_date': datetime.datetime.now().isoformat(),
-                        'last_used': datetime.datetime.now().isoformat()
-                    }
-                    self.save_persistent_config(config_data)
-                
-                return spreadsheet_id
-            except Exception as e:
-                print(f"⚠️  Progress spreadsheet no longer accessible: {e}")
-        
-        # Create new spreadsheet if none found or accessible
         try:
+            # Create the spreadsheet
             spreadsheet = {
                 'properties': {
                     'title': spreadsheet_name
@@ -219,26 +220,22 @@ class UltraEfficientYouTubeManager:
             
             spreadsheet_id = spreadsheet.get('spreadsheetId')
             print(f"📊 Created new Google Sheet: '{spreadsheet_name}'")
+            
+            # Move to Podkits folder if found
+            if folder_id and self.drive:
+                try:
+                    # Move the file to the folder
+                    self.drive.files().update(
+                        fileId=spreadsheet_id,
+                        addParents=folder_id,
+                        removeParents='root',
+                        fields='id, parents'
+                    ).execute()
+                    print(f"📁 Moved sheet to '{FOLDER_NAME}' folder")
+                except Exception as e:
+                    print(f"⚠️  Could not move to folder: {e}")
+            
             print(f"🔗 Sheet URL: https://docs.google.com/spreadsheets/d/{spreadsheet_id}")
-            
-            # For GitHub Actions: Print the ID so user can save it as secret
-            if os.environ.get('GITHUB_ACTIONS'):
-                print("=" * 80)
-                print("🔑 IMPORTANT: ADD THIS TO GITHUB SECRETS!")
-                print(f"   Secret name: GOOGLE_SPREADSHEET_ID")
-                print(f"   Secret value: {spreadsheet_id}")
-                print("   Go to: Settings > Secrets and variables > Actions")
-                print("=" * 80)
-            else:
-                # Save to persistent config for future runs (local only)
-                config_data = {
-                    'spreadsheet_id': spreadsheet_id,
-                    'spreadsheet_name': spreadsheet_name,
-                    'created_date': datetime.datetime.now().isoformat(),
-                    'last_used': datetime.datetime.now().isoformat()
-                }
-                self.save_persistent_config(config_data)
-            
             return spreadsheet_id
             
         except Exception as e:
@@ -246,29 +243,22 @@ class UltraEfficientYouTubeManager:
             return None
     
     def add_video_links_to_sheet(self, spreadsheet_id, videos):
-        """Add video URLs to Google Sheet with header, overwriting previous data"""
+        """Add video URLs to Google Sheet with header"""
         if not self.sheets:
             return False
             
         try:
             # Prepare header
-            header_row = [['Video Links']]  # Simple header
+            header_row = [['Video Links']]
             video_links = []
             
             # Add video links (if any)
             for video in videos:
                 video_url = f"https://www.youtube.com/watch?v={video['id']}"
-                video_links.append([video_url])  # Each link in its own row
+                video_links.append([video_url])
             
             # Combine header and links (header always included, even if no videos)
             all_data = header_row + video_links
-            
-            # Clear the entire sheet first
-            clear_request = self.sheets.spreadsheets().values().clear(
-                spreadsheetId=spreadsheet_id,
-                range='Video Links!A:Z'
-            )
-            clear_request.execute()
             
             # Write header + video links starting from A1
             range_name = 'Video Links!A1'
@@ -284,12 +274,10 @@ class UltraEfficientYouTubeManager:
                 body=body
             ).execute()
             
-            updated_cells = result.get('updatedCells', 0)
-            
             if len(videos) > 0:
-                print(f"📊 Updated Google Sheet: header + {len(videos)} video links")
+                print(f"📊 Added {len(videos)} video links to Google Sheet")
             else:
-                print(f"📊 Updated Google Sheet: header only (no videos found)")
+                print(f"📊 Created Google Sheet with header (no videos found)")
             
             return True
             
@@ -449,12 +437,11 @@ class UltraEfficientYouTubeManager:
                         id=video['playlist_item_id']
                     )
                     request.execute()
-                    self.log_quota("playlistItems.delete", 50)  # Costs 50 units
+                    self.log_quota("playlistItems.delete", 50)
                     
                     removed_count += 1
                     print(f"   ✅ [{removed_count}] Removed: {video['title']}")
                     
-                    # Small delay between removals
                     time.sleep(0.1)
                     
                 except Exception as e:
@@ -475,11 +462,11 @@ class UltraEfficientYouTubeManager:
             request = self.youtube.subscriptions().list(
                 part='snippet',
                 mine=True,
-                maxResults=batch_size,  # Maximum allowed
+                maxResults=batch_size,
                 pageToken=next_page_token
             )
             response = request.execute()
-            self.log_quota("subscriptions.list", 1)  # Only 1 unit per call!
+            self.log_quota("subscriptions.list", 1)
             
             for item in response['items']:
                 all_channels.append({
@@ -512,10 +499,10 @@ class UltraEfficientYouTubeManager:
             try:
                 request = self.youtube.channels().list(
                     part='contentDetails,snippet',
-                    id=','.join(batch)  # Batch request - MUCH more efficient!
+                    id=','.join(batch)
                 )
                 response = request.execute()
-                self.log_quota("channels.list (batch)", 1)  # Still only 1 unit for up to 50 channels!
+                self.log_quota("channels.list (batch)", 1)
                 
                 for channel in response['items']:
                     channel_id = channel['id']
@@ -570,7 +557,7 @@ class UltraEfficientYouTubeManager:
                 request = self.youtube.playlistItems().list(
                     part='snippet',
                     playlistId=uploads_playlist,
-                    maxResults=50  # Get more videos (order is automatic - most recent first)
+                    maxResults=50
                 )
                 response = request.execute()
                 self.log_quota("playlistItems.list", 1)
@@ -597,15 +584,14 @@ class UltraEfficientYouTubeManager:
                     
                     except Exception as e:
                         print(f"   ⚠️  Date parsing error for video in {channel_title}: {e}")
-                        continue  # Skip problematic videos
+                        continue
                 
                 processed_count += 1
                 if channel_video_count > 0:
                     print(f"   📹 [{processed_count}/{len(uploads_data)}] {channel_title}: {channel_video_count} video(s) yesterday")
-                elif processed_count % 25 == 0:  # Show progress less frequently
+                elif processed_count % 25 == 0:
                     print(f"   ⏳ Processed {processed_count}/{len(uploads_data)} channels... ({videos_yesterday} videos found)")
                 
-                # Micro-delay for API courtesy
                 time.sleep(0.02)
                 
             except Exception as e:
@@ -638,10 +624,10 @@ class UltraEfficientYouTubeManager:
             try:
                 request = self.youtube.videos().list(
                     part='snippet,contentDetails',
-                    id=','.join(batch)  # Batch request for up to 50 videos!
+                    id=','.join(batch)
                 )
                 response = request.execute()
-                self.log_quota("videos.list (batch)", 1)  # Only 1 unit for up to 50 videos!
+                self.log_quota("videos.list (batch)", 1)
                 
                 batch_long_videos = 0
                 for video in response['items']:
@@ -701,7 +687,7 @@ class UltraEfficientYouTubeManager:
                 }
             )
             response = request.execute()
-            self.log_quota("playlists.insert", 50)  # Expensive write operation
+            self.log_quota("playlists.insert", 50)
             
             playlist_id = response['id']
             print(f"✅ Created playlist: '{title}'")
@@ -738,13 +724,12 @@ class UltraEfficientYouTubeManager:
                     }
                 )
                 request.execute()
-                self.log_quota("playlistItems.insert", 50)  # Expensive write operation
+                self.log_quota("playlistItems.insert", 50)
                 
                 channel_name = channel_map.get(video['id'], 'Unknown')
                 added_count += 1
                 print(f"   ✅ [{added_count}] {video['title']} ({video['duration_formatted']}) - {channel_name}")
                 
-                # Small delay between writes to be respectful to API
                 time.sleep(0.1)
                 
             except Exception as e:
@@ -769,10 +754,7 @@ class UltraEfficientYouTubeManager:
         """
         Maintain single 'Yesterday' playlist by removing old videos and adding new ones
         Ultra-efficient API usage with daily filtering for videos 10+ minutes
-        
-        Args:
-            max_channels: Limit number of channels to process (for quota control)
-            max_videos: Limit number of videos to add to playlist (for quota control)
+        Creates new Google Sheet daily with date in filename
         """
         # Get date ranges
         yesterday_start, yesterday_end = self.get_yesterday_dates()
@@ -780,12 +762,13 @@ class UltraEfficientYouTubeManager:
         # Convert to Hong Kong timezone for display and naming
         hk_yesterday = yesterday_start.astimezone(TIMEZONE)
         
-        print("🚀 DAILY YouTube Video Manager - Single Playlist Mode")
+        print("🚀 DAILY YouTube Video Manager - Simple Daily Sheets")
         print("=" * 70)
         print(f"📅 TARGET DATE: {hk_yesterday.strftime('%A, %B %d, %Y')} (Hong Kong time)")
         print(f"🎬 Videos longer than 10 minutes only")
         print(f"🔢 Daily quota: 10,000 units")
-        print(f"🎯 Goal: Maintain single 'Yesterday' playlist with only yesterday's videos")
+        print(f"🎯 Goal: Maintain 'Yesterday' playlist + Create daily Google Sheet")
+        print(f"📁 New sheets will be created in '{FOLDER_NAME}' folder")
         
         # Check if running in GitHub Actions
         if os.environ.get('GITHUB_ACTIONS'):
@@ -817,11 +800,6 @@ class UltraEfficientYouTubeManager:
         if removed_count > 0:
             print(f"✅ Removed {removed_count} old videos from playlist")
         
-        # Check for existing progress
-        progress = self.load_progress()
-        if progress and progress.get('target_date') == hk_yesterday.strftime('%Y-%m-%d'):
-            print("📄 Resuming from saved progress for this date...")
-        
         # STEP 3: Get all subscriptions (ultra-efficient)
         print(f"\n🔍 STEP 3: Getting subscribed channels...")
         channels = self.get_subscriptions_batch()
@@ -851,13 +829,13 @@ class UltraEfficientYouTubeManager:
             print("   • Videos were uploaded as premieres/scheduled")
             print("   • Try running again later if premieres are starting today")
             
-            # Still update Google Sheet even if no new videos
+            # Still create Google Sheet even if no new videos
             if self.sheets:
-                print(f"\n📊 STEP 6: Updating Google Sheet with empty list...")
-                spreadsheet_id = self.get_or_create_spreadsheet(SPREADSHEET_NAME)
+                print(f"\n📊 STEP 6: Creating daily Google Sheet...")
+                spreadsheet_id = self.create_daily_spreadsheet()
                 if spreadsheet_id:
                     self.add_video_links_to_sheet(spreadsheet_id, [])
-                    print(f"✅ Updated Google Sheet (cleared previous links)")
+                    print(f"✅ Created daily Google Sheet with header only")
             return
         
         # STEP 6: Batch get video details (10+ minutes only)
@@ -868,13 +846,13 @@ class UltraEfficientYouTubeManager:
             print("ℹ️  No videos longer than 10 minutes found from yesterday")
             print("💡 All videos from yesterday were shorter than 10 minutes")
             
-            # Still update Google Sheet even if no long videos
+            # Still create Google Sheet even if no long videos
             if self.sheets:
-                print(f"\n📊 STEP 7: Updating Google Sheet with empty list...")
-                spreadsheet_id = self.get_or_create_spreadsheet(SPREADSHEET_NAME)
+                print(f"\n📊 STEP 7: Creating daily Google Sheet...")
+                spreadsheet_id = self.create_daily_spreadsheet()
                 if spreadsheet_id:
                     self.add_video_links_to_sheet(spreadsheet_id, [])
-                    print(f"✅ Updated Google Sheet (cleared previous links)")
+                    print(f"✅ Created daily Google Sheet with header only")
             return
         
         # STEP 7: Add new videos to playlist
@@ -888,30 +866,28 @@ class UltraEfficientYouTubeManager:
         
         added_count = self.batch_add_videos_to_playlist(yesterday_playlist_id, videos_to_add, channel_map)
         
-        # STEP 8: Update Google Sheets
-        print(f"\n📊 STEP 8: Updating Google Sheet with yesterday's video links...")
+        # STEP 8: Create daily Google Sheet
+        print(f"\n📊 STEP 8: Creating daily Google Sheet with video links...")
         spreadsheet_id = None
         
         if self.sheets:
             try:
-                # Get or create the spreadsheet
-                spreadsheet_id = self.get_or_create_spreadsheet(SPREADSHEET_NAME)
+                spreadsheet_id = self.create_daily_spreadsheet()
                 
                 if spreadsheet_id:
-                    # Add video links, overwriting previous data
                     sheet_success = self.add_video_links_to_sheet(spreadsheet_id, long_videos)
                     
                     if sheet_success:
-                        print(f"✅ Successfully updated Google Sheet with {len(long_videos)} video links")
+                        print(f"✅ Successfully created daily Google Sheet with {len(long_videos)} video links")
                     else:
-                        print(f"⚠️  Failed to update Google Sheet")
+                        print(f"⚠️  Failed to add links to Google Sheet")
                 else:
-                    print(f"⚠️  Failed to create/find Google Sheet")
+                    print(f"⚠️  Failed to create daily Google Sheet")
                     
             except Exception as e:
                 print(f"⚠️  Google Sheets integration failed: {e}")
         else:
-            print(f"⚠️  Google Sheets API not available, skipping spreadsheet update")
+            print(f"⚠️  Google Sheets API not available, skipping spreadsheet creation")
         
         # Results
         print("\n" + "=" * 70)
@@ -926,15 +902,15 @@ class UltraEfficientYouTubeManager:
         print(f"   🔗 Yesterday Playlist: https://www.youtube.com/playlist?list={yesterday_playlist_id}")
         
         if spreadsheet_id:
-            print(f"   📊 Google Sheet: https://docs.google.com/spreadsheets/d/{spreadsheet_id}")
-            print(f"   🔗 Links updated: Sheet now contains yesterday's links only")
+            print(f"   📊 Daily Google Sheet: https://docs.google.com/spreadsheets/d/{spreadsheet_id}")
+            print(f"   📁 Sheet saved in '{FOLDER_NAME}' folder")
         else:
-            print(f"   📊 Google Sheet: Not created (see warnings above)")
+            print(f"   📊 Daily Google Sheet: Not created (see warnings above)")
         
         # Show video length distribution
         if long_videos:
-            medium_videos = len([v for v in long_videos if 600 <= v['duration_seconds'] < 900])  # 10-15 min
-            long_videos_15plus = len([v for v in long_videos if v['duration_seconds'] >= 900])  # 15+ min
+            medium_videos = len([v for v in long_videos if 600 <= v['duration_seconds'] < 900])
+            long_videos_15plus = len([v for v in long_videos if v['duration_seconds'] >= 900])
             
             print(f"\n📊 VIDEO LENGTH DISTRIBUTION (10+ minutes only):")
             print(f"   🟡 Medium (10-15 min): {medium_videos}")
@@ -954,11 +930,11 @@ class UltraEfficientYouTubeManager:
             print(f"   📊 {efficiency:.1f} quota units per channel")
             print(f"   📈 {len(video_ids)/max(self.quota_used, 1):.1f} videos found per quota unit")
         
-        # Save progress
+        # Save progress (simplified - no persistent config needed)
         progress_data = {
             'playlist_id': yesterday_playlist_id,
             'spreadsheet_id': spreadsheet_id,
-            'target_date': hk_yesterday.strftime('%Y-%m-%d'),  # Hong Kong date
+            'target_date': hk_yesterday.strftime('%Y-%m-%d'),
             'target_date_hk': hk_yesterday.strftime('%A, %B %d, %Y'),
             'channels_processed': len(channels),
             'videos_found': len(video_ids),
@@ -973,34 +949,19 @@ class UltraEfficientYouTubeManager:
         }
         self.save_progress(progress_data)
         
-        # Update persistent config with latest usage (local only)
-        if spreadsheet_id and not os.environ.get('GITHUB_ACTIONS'):
-            config = self.load_persistent_config()
-            config_data = {
-                'spreadsheet_id': spreadsheet_id,
-                'spreadsheet_name': SPREADSHEET_NAME,
-                'created_date': config.get('created_date', datetime.datetime.now().isoformat()) if config else datetime.datetime.now().isoformat(),
-                'last_used': datetime.datetime.now().isoformat(),
-                'last_target_date': hk_yesterday.strftime('%Y-%m-%d')
-            }
-            self.save_persistent_config(config_data)
-        
-        # Clean up ONLY the daily progress file (keep persistent config)
+        # Clean up progress file
         if added_count == len(videos_to_add):
             try:
                 os.remove('daily_playlist_progress.json')
-                print("✅ Process completed successfully, daily progress file cleaned up")
-                if not os.environ.get('GITHUB_ACTIONS'):
-                    print("💾 Persistent spreadsheet config retained for tomorrow")
+                print("✅ Process completed successfully, progress file cleaned up")
             except:
                 pass
 
 def main():
-    """Main function for single playlist daily video management with Google Sheets logging"""
-    print("🎬 YouTube Single Playlist Manager + Link Logger")
-    print("🚀 Maintains one 'Yesterday' playlist with only yesterday's videos")
-    print("🗑️  Automatically removes old videos and adds new ones daily")
-    print("📊 Logs video links to Google Sheet (overwrites previous day)")
+    """Main function for daily video management with simple daily Google Sheets"""
+    print("🎬 YouTube Daily Manager - Simple Daily Sheets")
+    print("🚀 Maintains 'Yesterday' playlist + Creates new Google Sheet daily")
+    print("📁 New sheets saved in 'Podkits' folder with date in filename")
     print("-" * 70)
     
     try:
@@ -1008,24 +969,16 @@ def main():
         
         print(f"💡 Key Features:")
         print(f"   • Includes videos longer than 10 minutes only")
-        print(f"   • Maintains single 'Yesterday' playlist (no multiple playlists)")
-        print(f"   • Removes videos older than yesterday automatically")
-        print(f"   • Adds only yesterday's new videos")
-        print(f"   • Logs video links ONLY to Google Sheets (simple list)")
-        print(f"   • Each day overwrites previous day's links")
+        print(f"   • Maintains single 'Yesterday' playlist (removes old, adds new)")
+        print(f"   • Creates NEW Google Sheet daily with format: 'New video links - YYYY-MM-DD'")
+        print(f"   • Saves sheets in existing '{FOLDER_NAME}' folder")
         print(f"   • Ultra-efficient batch API calls")
         print(f"   • Smart quota tracking and preservation")
-        print(f"   • Resume capability if quota runs out")
-        print(f"   • NO LIMITS: Processes all channels and videos found")
-        print(f"   • REUSES SAME GOOGLE SHEET DAILY (no new sheets created)")
-        print(f"   • GITHUB ACTIONS COMPATIBLE (uses environment variables)")
+        print(f"   • GitHub Actions compatible")
+        print(f"   • NO COMPLEX CONFIGURATION - Just works!")
         print("-" * 70)
         
-        # Quota control options (commented out - no limits active)
-        # MAX_CHANNELS = 100  # Uncomment to process only first 100 channels
-        # MAX_VIDEOS = 30     # Uncomment to add only first 30 videos to playlist
-        
-        # Run the daily video management (full processing, no limits)
+        # Run the daily video management
         manager.run_daily_videos_manager()
         
     except Exception as e:
